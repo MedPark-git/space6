@@ -17,18 +17,50 @@ async function api(path, options={}){
  if(!response.ok){let data={};if(type.includes('json'))data=await response.json();if(response.status===401&&path!='/api/session'){showLogin();}const err=new Error(data.error||(response.status===413?'업로드 요청 용량을 초과했습니다. 녹음파일은 100 MB 이하인지 확인해 주세요.':response.status===406?'서버 보안 필터가 요청을 차단했습니다. 새로고침(Ctrl+F5) 후 다시 시도해 주세요. (406)':`요청을 처리하지 못했습니다. (${response.status})`));err.code=data.code;err.status=response.status;err.data=data;throw err;}
  if(type.includes('json'))return response.json();return response;
 }
-async function uploadAudio(file){
- const setup=await api('/api/audio-uploads',{method:'POST',body:JSON.stringify({filename:file.name,size:file.size,mime:file.type})});
- const size=setup.chunk_size||524288;
- for(let offset=0;offset<file.size;offset+=size){
-  $('analysis-progress').querySelector('span:last-child').textContent=`녹음파일 업로드 중… ${Math.min(100,Math.round((offset/file.size)*100))}%`;
-  const chunk=file.slice(offset,Math.min(file.size,offset+size));
-  // Raw bytes, not base64 text: the hosting firewall rejects large base64 form fields with 406.
+const UPLOAD_MODES=['file','hex','base64'];let uploadModeStart=0,uploadModeBlocks=[0,0,0];
+const HEX_TABLE=Array.from({length:256},(_,i)=>i.toString(16).padStart(2,'0'));
+function toHex(bytes){const parts=[];for(let s=0;s<bytes.length;s+=8192){let out='';const end=Math.min(bytes.length,s+8192);for(let i=s;i<end;i++)out+=HEX_TABLE[bytes[i]];parts.push(out);}return parts.join('');}
+function toBase64(bytes){let binary='';for(let s=0;s<bytes.length;s+=32768)binary+=String.fromCharCode(...bytes.subarray(s,s+32768));return btoa(binary);}
+async function sendChunk(uploadId,offset,blob,mode,ext){
+ const url='/api/audio-uploads/'+uploadId+'/chunk?offset='+offset;
+ if(mode==='file'){const form=new FormData();form.append('chunk',new Blob([blob],{type:'application/octet-stream'}),'chunk'+ext);return api(url,{method:'POST',body:form});}
+ const bytes=new Uint8Array(await blob.arrayBuffer());
+ const body=mode==='hex'?new URLSearchParams({chunk_hex:toHex(bytes)}):new URLSearchParams({chunk:toBase64(bytes)});
+ return api(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
+}
+// The hosting firewall answers some requests with 406 before they reach the app.
+// Try encodings in order; if every encoding is blocked, split the piece so the blocked byte pattern is broken up.
+async function putChunk(uploadId,offset,blob,ext,label,depth=0){
+ for(let m=uploadModeStart;m<UPLOAD_MODES.length;m++){
   for(let attempt=0;;attempt++){
-   try{await api('/api/audio-uploads/'+setup.upload_id+'/chunk?offset='+offset,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:chunk});break;}
-   catch(e){if(attempt>=2||(e.status&&e.status<500))throw e;await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));}
+   try{await sendChunk(uploadId,offset,blob,UPLOAD_MODES[m],ext);if(m>uploadModeStart&&uploadModeBlocks[uploadModeStart]>=2)uploadModeStart=m;uploadStats[UPLOAD_MODES[m]]=(uploadStats[UPLOAD_MODES[m]]||0)+1;return;}
+   catch(e){
+    if(e.status===406){uploadModeBlocks[m]++;break;}
+    if(attempt>=2||(e.status&&e.status<500))throw e;
+    await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
+   }
   }
  }
+ if(blob.size>16384&&depth<5){
+  const half=Math.ceil(blob.size/2);
+  await putChunk(uploadId,offset,blob.slice(0,half),ext,label,depth+1);
+  await putChunk(uploadId,offset+half,blob.slice(half),ext,label,depth+1);
+  return;
+ }
+ const err=new Error(`녹음파일 업로드가 서버 보안 필터에 차단되었습니다. (${label} 구간, 406) 이 문구를 캡처해 관리자에게 전달해 주세요.`);err.status=406;throw err;
+}
+let uploadStats={};
+async function uploadAudio(file){
+ let setup;
+ try{setup=await api('/api/audio-uploads',{method:'POST',body:JSON.stringify({filename:file.name,size:file.size,mime:file.type})});}
+ catch(e){if(e.status===406)e.message='녹음파일 업로드 준비 요청이 서버 보안 필터에 차단되었습니다. (406) 파일 이름을 영문·숫자로 바꿔 다시 시도해 주세요.';throw e;}
+ const size=setup.chunk_size||524288,total=Math.ceil(file.size/size),ext=(file.name.match(/\.[a-z0-9]{1,5}$/i)||['.bin'])[0].toLowerCase();
+ uploadStats={};
+ for(let offset=0,index=1;offset<file.size;offset+=size,index++){
+  $('analysis-progress').querySelector('span:last-child').textContent=`녹음파일 업로드 중… ${Math.min(100,Math.round((offset/file.size)*100))}%`;
+  await putChunk(setup.upload_id,offset,file.slice(offset,Math.min(file.size,offset+size)),ext,`${index}/${total}`);
+ }
+ console.info('MedPark upload encodings',uploadStats);
  return setup.upload_id;
 }
 function setAI(configured){aiConfigured=configured;$('ai-status').textContent=configured?'인증키 설정됨':'AI 연결 필요'}
