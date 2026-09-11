@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 from openpyxl.cell.rich_text import CellRichText, TextBlock
 from openpyxl.utils import get_column_letter
 
-EXCEL_IMAGE_VERSION = '2026-09-11-xlsx-svg-v3'
+EXCEL_IMAGE_VERSION = '2026-09-11-a3-width-svg-v4'
 
 
 def _color(color, default):
