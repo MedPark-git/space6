@@ -4,6 +4,7 @@ import base64
 import binascii
 import fcntl
 import datetime as dt
+import hashlib
 import io
 import json
 import logging
@@ -54,7 +55,7 @@ app.config.update(MAX_CONTENT_LENGTH=MAX_AUDIO_BYTES + 4 * 1024 * 1024,
     PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12))
 app.json.ensure_ascii = False
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-CATEGORIES = ['HR', '국내사업', '해외사업', '결산', '경영', '대표이사님 주재회의', 'TF', '기술부']
+CATEGORIES = ['HR', '국내사업', '해외사업', '결산']
 _schema_ready = False
 _schema_lock = threading.Lock()
 _login_attempts = collections.defaultdict(collections.deque)
@@ -105,7 +106,7 @@ def init_schema():
             with conn.cursor() as cur:
                 cur.execute('''CREATE TABLE IF NOT EXISTS meetings (
                     id UUID PRIMARY KEY, title TEXT NOT NULL,
-                    category TEXT NOT NULL CHECK (category IN ('HR','국내사업','해외사업','결산','경영','대표이사님 주재회의','TF','기술부')),
+                    category TEXT NOT NULL CHECK (category IN ('HR','국내사업','해외사업','결산')),
                     meeting_date DATE NOT NULL, status TEXT NOT NULL DEFAULT 'draft'
                         CHECK(status IN ('draft','confirmed')),
                     payload JSONB NOT NULL,
@@ -113,9 +114,6 @@ def init_schema():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     confirmed_at TIMESTAMPTZ)''')
-                cur.execute('ALTER TABLE meetings DROP CONSTRAINT IF EXISTS meetings_category_check')
-                cur.execute("""ALTER TABLE meetings ADD CONSTRAINT meetings_category_check
-                    CHECK (category IN ('HR','국내사업','해외사업','결산','경영','대표이사님 주재회의','TF','기술부'))""")
                 cur.execute('CREATE INDEX IF NOT EXISTS meetings_filter_idx ON meetings(status, category, meeting_date DESC)')
                 cur.execute('''CREATE TABLE IF NOT EXISTS meeting_revisions (
                     meeting_id UUID NOT NULL REFERENCES meetings(id), revision INTEGER NOT NULL,
@@ -213,7 +211,7 @@ def health():
             max_audio_upload_bytes=MAX_AUDIO_BYTES,
             audio_transcoder_ready=transcoder_ready(), analysis_pipeline_version=PIPELINE_VERSION,
             audio_checkpoint_minutes=RESUME_SEGMENT_SECONDS // 60,
-            analysis_resumable=True)
+            analysis_resumable=True, audio_upload_mode='adaptive-verified')
     except Exception:
         return jsonify(status='starting', app='MedPark-Meeting', database='postgresql'), 503
 
@@ -874,7 +872,35 @@ def create_audio_upload():
     upload_id=str(uuid.uuid4());directory=DATA/'audio-uploads'/upload_id
     directory.mkdir(parents=True,exist_ok=False,mode=0o700)
     (directory/'meta.json').write_text(json.dumps({'filename':filename,'size':size,'mime':str(data.get('mime',''))}))
-    return jsonify(upload_id=upload_id,chunk_size=AUDIO_UPLOAD_CHUNK_BYTES),201
+    return jsonify(upload_id=upload_id,chunk_size=AUDIO_UPLOAD_CHUNK_BYTES,upload_mode='adaptive-verified'),201
+
+
+def read_upload_chunk():
+    """Return (bytes, offset text) from any supported chunk encoding.
+
+    The hosting web firewall may reject a request with 406, strip its content
+    or alter bytes before Flask sees it, so the browser falls back across
+    encodings; accept all of them: multipart file part 'chunk', form field
+    'chunk_hex', form field 'chunk' (base64) and a raw octet-stream body.
+    A missing part yields b'' so the caller reports UPLOAD_CHUNK_MISSING.
+    """
+    if request.mimetype=='application/octet-stream':
+        if (request.content_length or 0)>AUDIO_UPLOAD_CHUNK_BYTES:
+            raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
+        return request.get_data(cache=False),request.args.get('offset','-1')
+    raw_offset=request.args.get('offset') or request.form.get('offset','-1')
+    upload=request.files.get('chunk')
+    if upload is not None:
+        return upload.read(AUDIO_UPLOAD_CHUNK_BYTES+1),raw_offset
+    encoded=request.form.get('chunk_hex')
+    if encoded is not None:
+        try:return bytes.fromhex(encoded),raw_offset
+        except ValueError:raise UserError('업로드 구간을 읽을 수 없습니다.',422,'UPLOAD_CHUNK_MISMATCH')
+    encoded=request.form.get('chunk')
+    if encoded is None:
+        return b'',raw_offset
+    try:return base64.b64decode(encoded,validate=True),raw_offset
+    except (binascii.Error,ValueError,TypeError):raise UserError('업로드 구간을 읽을 수 없습니다.',422,'UPLOAD_CHUNK_MISMATCH')
 
 
 @app.post('/api/audio-uploads/<upload_id>/chunk')
@@ -884,18 +910,27 @@ def append_audio_upload(upload_id):
     directory=DATA/'audio-uploads'/upload_id
     try:meta=json.loads((directory/'meta.json').read_text())
     except (FileNotFoundError,json.JSONDecodeError):raise UserError('업로드 대상을 찾을 수 없습니다.',404)
-    data=request.form
-    try:chunk=base64.b64decode(data.get('chunk',''),validate=True)
-    except (binascii.Error,ValueError,TypeError):raise UserError('업로드 구간을 읽을 수 없습니다.',400,'UPLOAD_CHUNK_INVALID')
-    if not chunk or len(chunk)>AUDIO_UPLOAD_CHUNK_BYTES:
+    chunk,raw_offset=read_upload_chunk()
+    if len(chunk)>AUDIO_UPLOAD_CHUNK_BYTES:
         raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
+    if not chunk:
+        # The firewall removed the content; the client retries with another encoding.
+        raise UserError('업로드 구간이 서버에 전달되지 않았습니다.',422,'UPLOAD_CHUNK_MISSING')
+    sent_size=request.args.get('size');sent_hash=(request.args.get('sha256') or '').lower()
+    if (sent_size and sent_size!=str(len(chunk))) or (sent_hash and hashlib.sha256(chunk).hexdigest()!=sent_hash):
+        # Never store bytes that were altered in transit.
+        raise UserError('업로드 구간이 전송 중 변경되었습니다.',422,'UPLOAD_CHUNK_MISMATCH')
     target=directory/'recording.bin';offset=target.stat().st_size if target.exists() else 0
-    try:expected=int(data.get('offset','-1'))
-    except ValueError:expected=-1
+    try:expected=int(raw_offset)
+    except (TypeError,ValueError):expected=-1
+    total=int(meta['size'])
+    if expected>=0 and expected+len(chunk)==offset:
+        # Retried chunk that was already written (response lost): acknowledge it.
+        return jsonify(received=offset,complete=offset==total)
     if expected!=offset:raise UserError('업로드 순서가 맞지 않습니다. 다시 시도해 주세요.',409,'UPLOAD_OFFSET')
-    if offset+len(chunk)>int(meta['size']):raise UserError('업로드 용량을 초과했습니다.',413,'FILE_TOO_LARGE')
+    if offset+len(chunk)>total:raise UserError('업로드 용량을 초과했습니다.',413,'FILE_TOO_LARGE')
     with target.open('ab') as handle:handle.write(chunk)
-    return jsonify(received=offset+len(chunk),complete=offset+len(chunk)==int(meta['size']))
+    return jsonify(received=offset+len(chunk),complete=offset+len(chunk)==total)
 
 
 def job_update(job_id, **fields):
