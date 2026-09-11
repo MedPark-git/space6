@@ -21,21 +21,24 @@ const UPLOAD_MODES=['file','hex','base64'];let uploadModeStart=0,uploadModeBlock
 const HEX_TABLE=Array.from({length:256},(_,i)=>i.toString(16).padStart(2,'0'));
 function toHex(bytes){const parts=[];for(let s=0;s<bytes.length;s+=8192){let out='';const end=Math.min(bytes.length,s+8192);for(let i=s;i<end;i++)out+=HEX_TABLE[bytes[i]];parts.push(out);}return parts.join('');}
 function toBase64(bytes){let binary='';for(let s=0;s<bytes.length;s+=32768)binary+=String.fromCharCode(...bytes.subarray(s,s+32768));return btoa(binary);}
-async function sendChunk(uploadId,offset,blob,mode,ext){
- const url='/api/audio-uploads/'+uploadId+'/chunk?offset='+offset;
- if(mode==='file'){const form=new FormData();form.append('chunk',new Blob([blob],{type:'application/octet-stream'}),'chunk'+ext);return api(url,{method:'POST',body:form});}
- const bytes=new Uint8Array(await blob.arrayBuffer());
+async function sendChunk(uploadId,offset,bytes,digest,mode,ext){
+ const url=`/api/audio-uploads/${uploadId}/chunk?offset=${offset}&size=${bytes.length}&sha256=${digest}`;
+ if(mode==='file'){const form=new FormData();form.append('chunk',new Blob([bytes],{type:'application/octet-stream'}),'chunk'+ext);return api(url,{method:'POST',body:form});}
  const body=mode==='hex'?new URLSearchParams({chunk_hex:toHex(bytes)}):new URLSearchParams({chunk:toBase64(bytes)});
  return api(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body.toString()});
 }
-// The hosting firewall answers some requests with 406 before they reach the app.
-// Try encodings in order; if every encoding is blocked, split the piece so the blocked byte pattern is broken up.
+// The hosting firewall may block a request (406), strip its content, or alter bytes before it reaches the app.
+// Each piece carries its size and SHA-256 so the server rejects anything that did not arrive intact;
+// on any of these the next encoding is tried, and if all fail the piece is split to break up the blocked pattern.
+const UPLOAD_FILTERED=new Set(['UPLOAD_CHUNK_MISSING','UPLOAD_CHUNK_MISMATCH']);
 async function putChunk(uploadId,offset,blob,ext,label,depth=0){
+ const bytes=new Uint8Array(await blob.arrayBuffer());
+ const digest=toHex(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)));
  for(let m=uploadModeStart;m<UPLOAD_MODES.length;m++){
   for(let attempt=0;;attempt++){
-   try{await sendChunk(uploadId,offset,blob,UPLOAD_MODES[m],ext);if(m>uploadModeStart&&uploadModeBlocks[uploadModeStart]>=2)uploadModeStart=m;uploadStats[UPLOAD_MODES[m]]=(uploadStats[UPLOAD_MODES[m]]||0)+1;return;}
+   try{await sendChunk(uploadId,offset,bytes,digest,UPLOAD_MODES[m],ext);if(m>uploadModeStart&&uploadModeBlocks[uploadModeStart]>=2)uploadModeStart=m;uploadStats[UPLOAD_MODES[m]]=(uploadStats[UPLOAD_MODES[m]]||0)+1;return;}
    catch(e){
-    if(e.status===406){uploadModeBlocks[m]++;break;}
+    if(e.status===406||UPLOAD_FILTERED.has(e.code)){uploadModeBlocks[m]++;break;}
     if(attempt>=2||(e.status&&e.status<500))throw e;
     await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
    }
@@ -47,7 +50,7 @@ async function putChunk(uploadId,offset,blob,ext,label,depth=0){
   await putChunk(uploadId,offset+half,blob.slice(half),ext,label,depth+1);
   return;
  }
- const err=new Error(`녹음파일 업로드가 서버 보안 필터에 차단되었습니다. (${label} 구간, 406) 이 문구를 캡처해 관리자에게 전달해 주세요.`);err.status=406;throw err;
+ const err=new Error(`녹음파일 업로드가 서버 보안 필터에 차단되었습니다. (${label} 구간) 이 문구를 캡처해 관리자에게 전달해 주세요.`);err.status=406;throw err;
 }
 let uploadStats={};
 async function uploadAudio(file){
