@@ -1,7 +1,7 @@
 """Presentation-only normalization; saved historical records are not rewritten."""
 import re
 
-FORMAT_VERSION = '2026-09-11-a3-master-a4-fit-v5'
+FORMAT_VERSION = '2026-09-11-a3-full-width-a4-fit-v6'
 CIRCLES = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'
 LETTERS = 'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ'
 
