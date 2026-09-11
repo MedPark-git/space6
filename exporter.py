@@ -289,13 +289,15 @@ def export_meeting(data):
     if pr is None:pr=ET.Element(Q('sheetPr'));sheet.insert(0,pr)
     setuppr=pr.find(Q('pageSetUpPr'))
     if setuppr is None:setuppr=ET.SubElement(pr,Q('pageSetUpPr'))
-    setuppr.set('fitToPage','0')
+    # Keep one workbook usable on both A4 and A3. Excel/printer paper choice
+    # controls the physical sheet while the content always fits one page wide.
+    setuppr.set('fitToPage','1')
     for tag in ('printOptions','pageMargins','pageSetup'):
         existing=sheet.find(Q(tag))
         if existing is not None:sheet.remove(existing)
     ET.SubElement(sheet,Q('printOptions'),{'horizontalCentered':'1'})
     ET.SubElement(sheet,Q('pageMargins'),{'left':'0.3','right':'0.3','top':'0.4','bottom':'0.4','header':'0.2','footer':'0.2'})
-    ET.SubElement(sheet,Q('pageSetup'),{'paperSize':'9','orientation':'portrait','scale':'100','fitToWidth':'1','fitToHeight':'0'})
+    ET.SubElement(sheet,Q('pageSetup'),{'orientation':'portrait','fitToWidth':'1','fitToHeight':'0','pageOrder':'downThenOver'})
     old_breaks=sheet.find(Q('rowBreaks'))
     if old_breaks is not None:sheet.remove(old_breaks)
     xfs.set('count',str(len(xfs)));borders.set('count',str(len(borders)))
