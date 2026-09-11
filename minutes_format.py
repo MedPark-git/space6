@@ -1,7 +1,7 @@
 """Presentation-only normalization; saved historical records are not rewritten."""
 import re
 
-FORMAT_VERSION = '2026-09-11-a3-full-width-a4-fit-v6'
+FORMAT_VERSION = '2026-09-11-four-level-numbering-v7'
 CIRCLES = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'
 LETTERS = 'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ'
 
@@ -31,7 +31,11 @@ def single_line(value):
 
 def executive_honorific(value):
     """Use MedPark's required honorific without producing '대표이사님님'."""
-    return re.sub(r'대표이사(?!님)', '대표이사님', str(value))
+    value=str(value)
+    particles={'가':'이','는':'은','를':'을','와':'과','의':'의'}
+    for source,target in particles.items():
+        value=re.sub(rf'대표이사{source}(?![가-힣])',f'대표이사님{target}',value)
+    return re.sub(r'대표이사(?!님)', '대표이사님', value)
 
 
 def format_discussion(value):
@@ -46,6 +50,7 @@ def format_discussion(value):
     section=''
     skip_section=False
     legacy_group=False
+    legacy_topic=False
     circle_pattern=r'[①-⑳㉑-㉟㊱-㊿]'
     for original in raw:
         text=original.strip()
@@ -58,7 +63,7 @@ def format_discussion(value):
             continue
         if heading:
             skip_section=False
-            top+=1;second=third=fourth=0;legacy_group=False
+            top+=1;second=third=fourth=0;legacy_group=False;legacy_topic=False
             section=title
             output.append(f'{top}. {title}')
             continue
@@ -72,19 +77,31 @@ def format_discussion(value):
         circled=re.match(r'^'+circle_pattern+r'\s*(.*)$',unbold)
         alphabet=re.match(r'^[ㄱ-ㅎ]+\.\s*(.*)$',unbold)
         bullet=re.match(r'^[-•]\s+(.*)$',text)
+        category_text=(circled.group(1).rstrip(':').strip() if circled else '')
+        legacy_category=bool(circled and category_text in ('핵심 내용','주요 의견','논의 결과') and (not second or legacy_topic))
         if sub or (compound and ('의사결정' in section or not second)):
             second+=1;third=fourth=0;legacy_group=False
             output.append(f'  {second}) '+(sub or compound).group(1))
         elif compound:
             third+=1;fourth=0;legacy_group=True
             output.append(f'    {circle(third)} '+compound.group(1))
+        elif legacy_category:
+            # Older analyses sometimes skipped the required 1) level and
+            # emitted ① 핵심 내용 → ㄱ. detail. Promote the category to 1)
+            # and its lettered children to ① so saved records also display
+            # with the MedPark four-level numbering hierarchy.
+            second+=1;third=fourth=0;legacy_group=False;legacy_topic=True
+            output.append(f'  {second}) {category_text}')
         elif circled:
             if legacy_group:
                 fourth+=1;output.append(f'      {letter(fourth)} '+circled.group(1))
             else:
                 third+=1;fourth=0;output.append(f'    {circle(third)} '+circled.group(1))
         elif alphabet:
-            fourth+=1;output.append(f'      {letter(fourth)} '+alphabet.group(1))
+            if legacy_topic:
+                third+=1;fourth=0;output.append(f'    {circle(third)} '+alphabet.group(1))
+            else:
+                fourth+=1;output.append(f'      {letter(fourth)} '+alphabet.group(1))
         elif text.startswith('담당자:') and '후속' in section:
             second+=1;third=fourth=0;legacy_group=False
             output.append(f'  {second}) '+text)
