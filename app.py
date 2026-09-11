@@ -1273,9 +1273,9 @@ def internal_database_restore():
                 if sql_lines:
                     cur.execute('\n'.join(sql_lines))
             conn.commit()
-        except Exception:
+        except Exception as exc:
             conn.rollback()
-            raise
+            return jsonify({'error': type(exc).__name__, 'detail': str(exc)[:1000]}), 500
     global _schema_ready
     _schema_ready = False
     init_schema()
