@@ -1229,59 +1229,5 @@ def perform_analysis(key,original,file_path,mime,context,saved_transcript='',job
         raise UserError('AI 응답을 읽을 수 없습니다. 다시 시도해 주세요.',502,'AI_FORMAT_ERROR')
 
 
-@app.post('/api/internal/database-restore')
-def internal_database_restore():
-    """One-time, token-protected PostgreSQL restore path used during migration."""
-    restore_token = os.getenv('RESTORE_TOKEN', '')
-    supplied_token = request.headers.get('X-Restore-Token', '')
-    if not restore_token or not secrets.compare_digest(restore_token, supplied_token):
-        return jsonify({'error': 'not found'}), 404
-    if request.content_length is None or request.content_length > 2 * 1024 * 1024:
-        return jsonify({'error': 'invalid restore file'}), 413
-    dump = request.get_data(cache=False, as_text=True)
-    if 'CREATE TABLE public.meetings' not in dump:
-        return jsonify({'error': 'invalid dump'}), 400
-    start = dump.find('SET statement_timeout = 0;', dump.find('\\connect medprk_'))
-    end = dump.find('\\connect postgres', start)
-    if start < 0 or end < 0:
-        return jsonify({'error': 'database section not found'}), 400
-    section = dump[start:end]
-    with _connect() as conn:
-        conn.autocommit = False
-        try:
-            with conn.cursor() as cur:
-                cur.execute('DROP SCHEMA public CASCADE; CREATE SCHEMA public')
-                lines = section.splitlines()
-                sql_lines = []
-                index = 0
-                while index < len(lines):
-                    line = lines[index]
-                    if line.startswith('COPY ') and line.endswith(' FROM stdin;'):
-                        if any(value.strip() and not value.lstrip().startswith('--') for value in sql_lines):
-                            cur.execute('\n'.join(sql_lines))
-                            sql_lines = []
-                        copy_sql = line
-                        index += 1
-                        rows = []
-                        while index < len(lines) and lines[index] != '\\.':
-                            rows.append(lines[index])
-                            index += 1
-                        if rows:
-                            cur.copy_expert(copy_sql, io.StringIO('\n'.join(rows) + '\n'))
-                    elif not line.startswith('\\'):
-                        sql_lines.append(line)
-                    index += 1
-                if any(value.strip() and not value.lstrip().startswith('--') for value in sql_lines):
-                    cur.execute('\n'.join(sql_lines))
-            conn.commit()
-        except Exception as exc:
-            conn.rollback()
-            return jsonify({'error': type(exc).__name__, 'detail': str(exc)[:1000]}), 500
-    global _schema_ready
-    _schema_ready = False
-    init_schema()
-    return jsonify({'status': 'restored'})
-
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.getenv('PORT','8000')))
