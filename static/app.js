@@ -14,18 +14,20 @@ async function api(path, options={}){
  if(options.body && !(options.body instanceof FormData) && !headers['Content-Type'])headers['Content-Type']='application/json';
  const response=await fetch(path,{credentials:'same-origin',...options,headers});
  const type=response.headers.get('content-type')||'';
- if(!response.ok){let data={};if(type.includes('json'))data=await response.json();if(response.status===401&&path!='/api/session'){showLogin();}const err=new Error(data.error||(response.status===413?'업로드 요청 용량을 초과했습니다. 녹음파일은 100 MB 이하인지 확인해 주세요.':`요청을 처리하지 못했습니다. (${response.status})`));err.code=data.code;err.status=response.status;err.data=data;throw err;}
+ if(!response.ok){let data={};if(type.includes('json'))data=await response.json();if(response.status===401&&path!='/api/session'){showLogin();}const err=new Error(data.error||(response.status===413?'업로드 요청 용량을 초과했습니다. 녹음파일은 100 MB 이하인지 확인해 주세요.':response.status===406?'서버 보안 필터가 요청을 차단했습니다. 새로고침(Ctrl+F5) 후 다시 시도해 주세요. (406)':`요청을 처리하지 못했습니다. (${response.status})`));err.code=data.code;err.status=response.status;err.data=data;throw err;}
  if(type.includes('json'))return response.json();return response;
 }
 async function uploadAudio(file){
  const setup=await api('/api/audio-uploads',{method:'POST',body:JSON.stringify({filename:file.name,size:file.size,mime:file.type})});
- const size=setup.chunk_size||8388608;
+ const size=setup.chunk_size||524288;
  for(let offset=0;offset<file.size;offset+=size){
   $('analysis-progress').querySelector('span:last-child').textContent=`녹음파일 업로드 중… ${Math.min(100,Math.round((offset/file.size)*100))}%`;
-  const bytes=new Uint8Array(await file.slice(offset,Math.min(file.size,offset+size)).arrayBuffer());let binary='';
-  for(let start=0;start<bytes.length;start+=32768)binary+=String.fromCharCode(...bytes.subarray(start,start+32768));
-  const encoded=new URLSearchParams({offset:String(offset),chunk:btoa(binary)});
-  await api('/api/audio-uploads/'+setup.upload_id+'/chunk',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:encoded.toString()});
+  const chunk=file.slice(offset,Math.min(file.size,offset+size));
+  // Raw bytes, not base64 text: the hosting firewall rejects large base64 form fields with 406.
+  for(let attempt=0;;attempt++){
+   try{await api('/api/audio-uploads/'+setup.upload_id+'/chunk?offset='+offset,{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:chunk});break;}
+   catch(e){if(attempt>=2||(e.status&&e.status<500))throw e;await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));}
+  }
  }
  return setup.upload_id;
 }
