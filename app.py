@@ -1257,7 +1257,7 @@ def internal_database_restore():
                 while index < len(lines):
                     line = lines[index]
                     if line.startswith('COPY ') and line.endswith(' FROM stdin;'):
-                        if sql_lines:
+                        if any(value.strip() and not value.lstrip().startswith('--') for value in sql_lines):
                             cur.execute('\n'.join(sql_lines))
                             sql_lines = []
                         copy_sql = line
@@ -1271,7 +1271,7 @@ def internal_database_restore():
                     elif not line.startswith('\\'):
                         sql_lines.append(line)
                     index += 1
-                if sql_lines:
+                if any(value.strip() and not value.lstrip().startswith('--') for value in sql_lines):
                     cur.execute('\n'.join(sql_lines))
             conn.commit()
         except Exception as exc:
