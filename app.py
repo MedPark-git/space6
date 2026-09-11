@@ -210,7 +210,7 @@ def health():
             max_audio_upload_bytes=MAX_AUDIO_BYTES,
             audio_transcoder_ready=transcoder_ready(), analysis_pipeline_version=PIPELINE_VERSION,
             audio_checkpoint_minutes=RESUME_SEGMENT_SECONDS // 60,
-            analysis_resumable=True)
+            analysis_resumable=True, audio_upload_mode='binary')
     except Exception:
         return jsonify(status='starting', app='MedPark-Meeting', database='postgresql'), 503
 
@@ -871,28 +871,47 @@ def create_audio_upload():
     upload_id=str(uuid.uuid4());directory=DATA/'audio-uploads'/upload_id
     directory.mkdir(parents=True,exist_ok=False,mode=0o700)
     (directory/'meta.json').write_text(json.dumps({'filename':filename,'size':size,'mime':str(data.get('mime',''))}))
-    return jsonify(upload_id=upload_id,chunk_size=AUDIO_UPLOAD_CHUNK_BYTES),201
+    return jsonify(upload_id=upload_id,chunk_size=AUDIO_UPLOAD_CHUNK_BYTES,upload_mode='binary'),201
 
 
 @app.post('/api/audio-uploads/<upload_id>/chunk')
 def append_audio_upload(upload_id):
+    """Append one upload chunk.
+
+    Preferred: raw bytes (Content-Type: application/octet-stream, ?offset=N).
+    Hosting web firewalls scan text form fields; large base64 fields randomly
+    match attack signatures and are rejected with 406 before reaching Flask.
+    Raw binary bodies are not parsed as text parameters, so they pass.
+    Legacy base64 form uploads are still accepted for old cached clients.
+    """
     try:upload_id=str(uuid.UUID(upload_id))
     except ValueError:raise UserError('업로드 대상을 찾을 수 없습니다.',404)
     directory=DATA/'audio-uploads'/upload_id
     try:meta=json.loads((directory/'meta.json').read_text())
     except (FileNotFoundError,json.JSONDecodeError):raise UserError('업로드 대상을 찾을 수 없습니다.',404)
-    data=request.form
-    try:chunk=base64.b64decode(data.get('chunk',''),validate=True)
-    except (binascii.Error,ValueError,TypeError):raise UserError('업로드 구간을 읽을 수 없습니다.',400,'UPLOAD_CHUNK_INVALID')
+    if request.mimetype=='application/octet-stream':
+        if (request.content_length or 0)>AUDIO_UPLOAD_CHUNK_BYTES:
+            raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
+        chunk=request.get_data(cache=False)
+        raw_offset=request.args.get('offset','-1')
+    else:
+        data=request.form
+        try:chunk=base64.b64decode(data.get('chunk',''),validate=True)
+        except (binascii.Error,ValueError,TypeError):raise UserError('업로드 구간을 읽을 수 없습니다.',400,'UPLOAD_CHUNK_INVALID')
+        raw_offset=data.get('offset','-1')
     if not chunk or len(chunk)>AUDIO_UPLOAD_CHUNK_BYTES:
         raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
     target=directory/'recording.bin';offset=target.stat().st_size if target.exists() else 0
-    try:expected=int(data.get('offset','-1'))
-    except ValueError:expected=-1
+    try:expected=int(raw_offset)
+    except (TypeError,ValueError):expected=-1
+    total=int(meta['size'])
+    if expected>=0 and expected+len(chunk)==offset:
+        # Retried chunk that was already written (response lost): acknowledge it.
+        return jsonify(received=offset,complete=offset==total)
     if expected!=offset:raise UserError('업로드 순서가 맞지 않습니다. 다시 시도해 주세요.',409,'UPLOAD_OFFSET')
-    if offset+len(chunk)>int(meta['size']):raise UserError('업로드 용량을 초과했습니다.',413,'FILE_TOO_LARGE')
+    if offset+len(chunk)>total:raise UserError('업로드 용량을 초과했습니다.',413,'FILE_TOO_LARGE')
     with target.open('ab') as handle:handle.write(chunk)
-    return jsonify(received=offset+len(chunk),complete=offset+len(chunk)==int(meta['size']))
+    return jsonify(received=offset+len(chunk),complete=offset+len(chunk)==total)
 
 
 def job_update(job_id, **fields):
