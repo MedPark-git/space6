@@ -210,7 +210,7 @@ def health():
             max_audio_upload_bytes=MAX_AUDIO_BYTES,
             audio_transcoder_ready=transcoder_ready(), analysis_pipeline_version=PIPELINE_VERSION,
             audio_checkpoint_minutes=RESUME_SEGMENT_SECONDS // 60,
-            analysis_resumable=True, audio_upload_mode='binary')
+            analysis_resumable=True, audio_upload_mode='adaptive')
     except Exception:
         return jsonify(status='starting', app='MedPark-Meeting', database='postgresql'), 503
 
@@ -871,34 +871,42 @@ def create_audio_upload():
     upload_id=str(uuid.uuid4());directory=DATA/'audio-uploads'/upload_id
     directory.mkdir(parents=True,exist_ok=False,mode=0o700)
     (directory/'meta.json').write_text(json.dumps({'filename':filename,'size':size,'mime':str(data.get('mime',''))}))
-    return jsonify(upload_id=upload_id,chunk_size=AUDIO_UPLOAD_CHUNK_BYTES,upload_mode='binary'),201
+    return jsonify(upload_id=upload_id,chunk_size=AUDIO_UPLOAD_CHUNK_BYTES,upload_mode='adaptive'),201
+
+
+def read_upload_chunk():
+    """Return (bytes, offset text) from any supported chunk encoding.
+
+    The hosting web firewall rejects some requests with 406 before Flask sees
+    them, so the browser falls back across encodings; accept all of them:
+    multipart file part 'chunk', form field 'chunk_hex', form field 'chunk'
+    (base64) and a raw application/octet-stream body. Offset comes from the
+    query string, or from the form for legacy clients.
+    """
+    if request.mimetype=='application/octet-stream':
+        if (request.content_length or 0)>AUDIO_UPLOAD_CHUNK_BYTES:
+            raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
+        return request.get_data(cache=False),request.args.get('offset','-1')
+    raw_offset=request.args.get('offset') or request.form.get('offset','-1')
+    upload=request.files.get('chunk')
+    if upload is not None:
+        return upload.read(AUDIO_UPLOAD_CHUNK_BYTES+1),raw_offset
+    encoded=request.form.get('chunk_hex')
+    if encoded is not None:
+        try:return bytes.fromhex(encoded),raw_offset
+        except ValueError:raise UserError('업로드 구간을 읽을 수 없습니다.',400,'UPLOAD_CHUNK_INVALID')
+    try:return base64.b64decode(request.form.get('chunk',''),validate=True),raw_offset
+    except (binascii.Error,ValueError,TypeError):raise UserError('업로드 구간을 읽을 수 없습니다.',400,'UPLOAD_CHUNK_INVALID')
 
 
 @app.post('/api/audio-uploads/<upload_id>/chunk')
 def append_audio_upload(upload_id):
-    """Append one upload chunk.
-
-    Preferred: raw bytes (Content-Type: application/octet-stream, ?offset=N).
-    Hosting web firewalls scan text form fields; large base64 fields randomly
-    match attack signatures and are rejected with 406 before reaching Flask.
-    Raw binary bodies are not parsed as text parameters, so they pass.
-    Legacy base64 form uploads are still accepted for old cached clients.
-    """
     try:upload_id=str(uuid.UUID(upload_id))
     except ValueError:raise UserError('업로드 대상을 찾을 수 없습니다.',404)
     directory=DATA/'audio-uploads'/upload_id
     try:meta=json.loads((directory/'meta.json').read_text())
     except (FileNotFoundError,json.JSONDecodeError):raise UserError('업로드 대상을 찾을 수 없습니다.',404)
-    if request.mimetype=='application/octet-stream':
-        if (request.content_length or 0)>AUDIO_UPLOAD_CHUNK_BYTES:
-            raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
-        chunk=request.get_data(cache=False)
-        raw_offset=request.args.get('offset','-1')
-    else:
-        data=request.form
-        try:chunk=base64.b64decode(data.get('chunk',''),validate=True)
-        except (binascii.Error,ValueError,TypeError):raise UserError('업로드 구간을 읽을 수 없습니다.',400,'UPLOAD_CHUNK_INVALID')
-        raw_offset=data.get('offset','-1')
+    chunk,raw_offset=read_upload_chunk()
     if not chunk or len(chunk)>AUDIO_UPLOAD_CHUNK_BYTES:
         raise UserError('업로드 구간의 크기를 확인해 주세요.',413,'UPLOAD_CHUNK_SIZE')
     target=directory/'recording.bin';offset=target.stat().st_size if target.exists() else 0
