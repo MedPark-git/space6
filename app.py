@@ -211,7 +211,8 @@ def health():
             max_audio_upload_bytes=MAX_AUDIO_BYTES,
             audio_transcoder_ready=transcoder_ready(), analysis_pipeline_version=PIPELINE_VERSION,
             audio_checkpoint_minutes=RESUME_SEGMENT_SECONDS // 60,
-            analysis_resumable=True, audio_upload_mode='adaptive-verified')
+            analysis_resumable=True, audio_upload_mode='adaptive-verified',
+            meeting_delete=True)
     except Exception:
         return jsonify(status='starting', app='MedPark-Meeting', database='postgresql'), 503
 
@@ -372,6 +373,29 @@ def list_meetings():
 @app.get('/api/meetings/<meeting_id>')
 def detail(meeting_id):
     return jsonify(serialize(get_meeting(meeting_id)))
+
+
+@app.post('/api/meetings/<meeting_id>/delete')
+def delete_meeting(meeting_id):
+    """Permanently delete a meeting and its revision history.
+
+    POST instead of DELETE: the hosting web firewall may reject uncommon HTTP methods.
+    """
+    try:
+        meeting_id = str(uuid.UUID(meeting_id))
+    except ValueError:
+        raise UserError('회의록을 찾을 수 없습니다.', 404, 'MEETING_NOT_FOUND')
+    init_schema()
+    with connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute('SELECT title FROM meetings WHERE id=%s FOR UPDATE', (meeting_id,))
+            row = cur.fetchone()
+            if not row:
+                raise UserError('이미 삭제되었거나 회의록을 찾을 수 없습니다.', 404, 'MEETING_NOT_FOUND')
+            cur.execute('DELETE FROM meeting_revisions WHERE meeting_id=%s', (meeting_id,))
+            cur.execute('DELETE FROM meetings WHERE id=%s', (meeting_id,))
+    logging.info('Meeting %s deleted', meeting_id)
+    return jsonify(deleted=True, id=meeting_id)
 
 
 @app.post('/api/meetings')
