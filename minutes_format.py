@@ -1,7 +1,7 @@
 """Presentation-only normalization; saved historical records are not rewritten."""
 import re
 
-FORMAT_VERSION = '2026-09-11-row-summary-no-info-v3'
+FORMAT_VERSION = '2026-09-11-executive-honorific-dual-paper-v4'
 CIRCLES = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳'
 LETTERS = 'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ'
 
@@ -29,13 +29,18 @@ def single_line(value):
     return re.sub(r'\s+', ' ',str(value)).strip()
 
 
+def executive_honorific(value):
+    """Use MedPark's required honorific without producing '대표이사님님'."""
+    return re.sub(r'대표이사(?!님)', '대표이사님', str(value))
+
+
 def format_discussion(value):
     """Remove the summary report and normalize new/legacy heading markers.
 
     Only line-leading list markers change; dates, amounts and numbered text
     inside sentences are retained. Explicit summary-report sections are omitted.
     """
-    raw=str(value).replace('\r\n','\n').replace('\r','\n').split('\n')
+    raw=executive_honorific(value).replace('\r\n','\n').replace('\r','\n').split('\n')
     output=[]
     top=second=third=fourth=0
     section=''
@@ -99,6 +104,9 @@ def format_discussion(value):
 
 
 def presentation(data):
-    return dict(data, discussion=format_discussion(data.get('discussion','')),
-        conclusions=[single_line(item)
-                     for item in data.get('conclusions',[])])
+    normalized={key:(executive_honorific(value) if isinstance(value,str) else
+        [executive_honorific(item) if isinstance(item,str) else item for item in value]
+        if isinstance(value,list) else value) for key,value in data.items()}
+    return dict(normalized, discussion=format_discussion(normalized.get('discussion','')),
+        conclusions=[single_line(executive_honorific(item))
+                     for item in normalized.get('conclusions',[])])
