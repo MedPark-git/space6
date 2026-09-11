@@ -1266,7 +1266,8 @@ def internal_database_restore():
                         while index < len(lines) and lines[index] != '\\.':
                             rows.append(lines[index])
                             index += 1
-                        cur.copy_expert(copy_sql, io.StringIO('\n'.join(rows) + '\n'))
+                        if rows:
+                            cur.copy_expert(copy_sql, io.StringIO('\n'.join(rows) + '\n'))
                     elif not line.startswith('\\'):
                         sql_lines.append(line)
                     index += 1
