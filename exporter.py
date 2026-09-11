@@ -19,6 +19,7 @@ NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 Q = lambda name: '{' + NS + '}' + name
 ET.register_namespace('',NS)
 TEMPLATE=Path(__file__).parent/'templates/meeting-template.xlsx'
+A3_WIDTH_SCALE = 297 / 210
 
 
 def template_source():
@@ -258,7 +259,10 @@ def export_meeting(data):
 
     def text_section(spacer,header,prototype,title,text):
         nonlocal discussion_header
-        wrapped=emphasis_lines(text,84)
+        # The workbook is authored at A3 width.  Estimate physical line count
+        # at the same wider measure so row heights and the PNG renderer do not
+        # retain the old A4-shaped, unnecessarily tall layout.
+        wrapped=emphasis_lines(text,119)
         logical=emphasis_lines(text,10**9)
         if title=='회의내용':
             logical=[StyledText(tuple((t,True) for t,_ in line.runs))
@@ -292,11 +296,21 @@ def export_meeting(data):
     # Author at A3 size. If the printer is switched to A4, Excel scales the
     # same content down to one page wide without changing the sheet layout.
     setuppr.set('fitToPage','1')
+    # The retained template was designed at A4 width.  Merely changing
+    # paperSize to A3 makes Excel center that narrow grid on a wider sheet.
+    # Expand the actual grid to A3 proportions; A4 printing then uses the
+    # fit-to-one-page-wide setting below to scale it back down.
+    cols=sheet.find(Q('cols'))
+    if cols is not None:
+        for col in cols.findall(Q('col')):
+            if col.get('width'):
+                col.set('width',f"{float(col.get('width')) * A3_WIDTH_SCALE:.6f}")
+                col.set('customWidth','1')
     for tag in ('printOptions','pageMargins','pageSetup'):
         existing=sheet.find(Q(tag))
         if existing is not None:sheet.remove(existing)
     ET.SubElement(sheet,Q('printOptions'),{'horizontalCentered':'1'})
-    ET.SubElement(sheet,Q('pageMargins'),{'left':'0.3','right':'0.3','top':'0.4','bottom':'0.4','header':'0.2','footer':'0.2'})
+    ET.SubElement(sheet,Q('pageMargins'),{'left':'0.15','right':'0.15','top':'0.3','bottom':'0.3','header':'0.15','footer':'0.15'})
     ET.SubElement(sheet,Q('pageSetup'),{'paperSize':'8','orientation':'portrait','fitToWidth':'1','fitToHeight':'0','pageOrder':'downThenOver'})
     old_breaks=sheet.find(Q('rowBreaks'))
     if old_breaks is not None:sheet.remove(old_breaks)
