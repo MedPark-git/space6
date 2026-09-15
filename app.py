@@ -55,7 +55,7 @@ app.config.update(MAX_CONTENT_LENGTH=MAX_AUDIO_BYTES + 4 * 1024 * 1024,
     PERMANENT_SESSION_LIFETIME=dt.timedelta(hours=12))
 app.json.ensure_ascii = False
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
-CATEGORIES = ['HR', '국내사업', '해외사업', '결산']
+CATEGORIES = ['HR', '국내사업', '해외사업', '결산', '경영', '대표이사님 주재회의', 'TF', '기술부']
 _schema_ready = False
 _schema_lock = threading.Lock()
 _login_attempts = collections.defaultdict(collections.deque)
@@ -106,7 +106,7 @@ def init_schema():
             with conn.cursor() as cur:
                 cur.execute('''CREATE TABLE IF NOT EXISTS meetings (
                     id UUID PRIMARY KEY, title TEXT NOT NULL,
-                    category TEXT NOT NULL CHECK (category IN ('HR','국내사업','해외사업','결산')),
+                    category TEXT NOT NULL CHECK (category IN ('HR','국내사업','해외사업','결산','경영','대표이사님 주재회의','TF','기술부')),
                     meeting_date DATE NOT NULL, status TEXT NOT NULL DEFAULT 'draft'
                         CHECK(status IN ('draft','confirmed')),
                     payload JSONB NOT NULL,
@@ -114,6 +114,21 @@ def init_schema():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     confirmed_at TIMESTAMPTZ)''')
+                # Keep the database constraint aligned with the categories
+                # returned to the browser. Existing databases may still have
+                # the original four-category constraint even after the UI was
+                # expanded, which rejects confirmation at INSERT time.
+                cur.execute("""SELECT pg_get_constraintdef(oid)
+                    FROM pg_constraint
+                    WHERE conrelid='meetings'::regclass
+                    AND conname='meetings_category_check'""")
+                category_constraint = cur.fetchone()
+                if (not category_constraint or
+                        any(category not in category_constraint[0] for category in CATEGORIES)):
+                    cur.execute('ALTER TABLE meetings DROP CONSTRAINT IF EXISTS meetings_category_check')
+                    cur.execute("""ALTER TABLE meetings ADD CONSTRAINT meetings_category_check
+                        CHECK (category IN ('HR','국내사업','해외사업','결산','경영',
+                            '대표이사님 주재회의','TF','기술부'))""")
                 cur.execute('CREATE INDEX IF NOT EXISTS meetings_filter_idx ON meetings(status, category, meeting_date DESC)')
                 cur.execute('''CREATE TABLE IF NOT EXISTS meeting_revisions (
                     meeting_id UUID NOT NULL REFERENCES meetings(id), revision INTEGER NOT NULL,
