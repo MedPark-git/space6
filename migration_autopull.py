@@ -58,7 +58,7 @@ def _run():
     if not source or not token:
         _set(status="disabled")
         return
-    headers = {"X-Migration-Token": token}
+    headers = {"Cookie": f"migration_token={token}"}
     try:
         _set(status="reading_source")
         manifest_response = requests.get(
@@ -135,7 +135,9 @@ def _run():
 @app.get("/_internal/migration/status")
 def migration_status():
     with _LOCK:
-        return jsonify(dict(_STATE))
+        payload = dict(_STATE)
+    code = 200 if payload.get("status") == "verified" else 500 if payload.get("status") == "failed" else 202
+    return jsonify(payload), code
 
 
 if os.getenv("MIGRATION_AUTO_PULL") == "1":
