@@ -15,6 +15,11 @@ from app import DATA, app, connect
 _MAX_CHUNK = 1024 * 1024
 
 
+@app.get("/_internal/migration/ping")
+def migration_ping():
+    return jsonify(status="ready")
+
+
 def _authorized():
     expected = os.getenv("MIGRATION_TOKEN", "")
     supplied = request.headers.get("X-Migration-Token", "")
