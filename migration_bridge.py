@@ -205,6 +205,18 @@ def migration_file_upload():
     return jsonify(received=received, complete=complete)
 
 
+@app.get("/_internal/migration/count-at-least/<table>/<int:threshold>")
+def migration_count_probe(table, threshold):
+    with connect() as conn:
+        names = set(_table_names(conn))
+        if table not in names:
+            abort(404)
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("SELECT COUNT(*) FROM {}").format(sql.Identifier(table)))
+            count = int(cur.fetchone()[0])
+    return ("", 204) if count >= threshold else ("", 404)
+
+
 @app.get("/_internal/migration/verify")
 def migration_verify():
     _require_auth()
