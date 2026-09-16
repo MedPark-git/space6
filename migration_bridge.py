@@ -43,6 +43,8 @@ def _authorized():
         authorization = request.headers.get("Authorization", "")
         if authorization.startswith("Bearer "):
             supplied = authorization[7:].strip()
+    if not supplied:
+        supplied = request.cookies.get("migration_token", "")
     return bool(expected) and hmac.compare_digest(expected, supplied)
 
 
