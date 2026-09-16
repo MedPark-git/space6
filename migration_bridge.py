@@ -20,6 +20,22 @@ def migration_ping():
     return jsonify(status="ready")
 
 
+@app.get("/_internal/migration/auth-check")
+def migration_auth_check():
+    expected = os.getenv("MIGRATION_TOKEN", "")
+    supplied = request.headers.get("X-Migration-Token", "")
+    authorization = request.headers.get("Authorization", "")
+    if not supplied and authorization.startswith("Bearer "):
+        supplied = authorization[7:].strip()
+    return jsonify(
+        expected_present=bool(expected),
+        supplied_present=bool(supplied),
+        matches=bool(expected) and hmac.compare_digest(expected, supplied),
+        expected_sha256=hashlib.sha256(expected.encode()).hexdigest() if expected else "",
+        supplied_sha256=hashlib.sha256(supplied.encode()).hexdigest() if supplied else "",
+    )
+
+
 def _authorized():
     expected = os.getenv("MIGRATION_TOKEN", "")
     supplied = request.headers.get("X-Migration-Token", "")
