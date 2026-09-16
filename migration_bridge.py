@@ -74,7 +74,7 @@ def _table_names(conn):
     with conn.cursor() as cur:
         cur.execute(
             """SELECT table_name FROM information_schema.tables
-               WHERE table_schema='public' AND table_type='BASE TABLE'
+               WHERE table_schema=current_schema() AND table_type='BASE TABLE'
                ORDER BY table_name"""
         )
         return [row[0] for row in cur.fetchall()]
