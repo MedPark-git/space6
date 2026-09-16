@@ -23,6 +23,10 @@ def migration_ping():
 def _authorized():
     expected = os.getenv("MIGRATION_TOKEN", "")
     supplied = request.headers.get("X-Migration-Token", "")
+    if not supplied:
+        authorization = request.headers.get("Authorization", "")
+        if authorization.startswith("Bearer "):
+            supplied = authorization[7:].strip()
     return bool(expected) and hmac.compare_digest(expected, supplied)
 
 
