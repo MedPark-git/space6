@@ -20,6 +20,11 @@ def migration_ping():
     return jsonify(status="ready")
 
 
+@app.get("/_internal/migration/version-2")
+def migration_version_2():
+    return ("", 204)
+
+
 @app.get("/_internal/migration/auth-check")
 def migration_auth_check():
     expected = os.getenv("MIGRATION_TOKEN", "")
